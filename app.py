@@ -6,7 +6,9 @@
 # --------------------------------------------------------------
 
 import os
+import io
 import json
+import zipfile
 import uuid
 import hashlib
 import shutil
@@ -134,10 +136,11 @@ def human_size(n):
         n /= 1024
     return f"{n:.1f} PB"
 
-def file_sha256(data):
+def file_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 def save_upload_to_section(section, upload, subdir=""):
+    """Button-gated upload with content-hash de-dup."""
     data = upload.read()
     fhash = file_sha256(data)
     if any(f.get("hash") == fhash for f in section.get("files", [])):
@@ -157,8 +160,31 @@ def save_upload_to_section(section, upload, subdir=""):
     section["files"].append(meta)
     return meta, "saved"
 
+# ---- uploads.zip Export/Import ----
+def make_uploads_zip() -> bytes:
+    """Create a ZIP archive of everything in uploads/."""
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
+        if UPLOAD_DIR.exists():
+            for root, _, files in os.walk(UPLOAD_DIR):
+                for name in files:
+                    full = Path(root) / name
+                    # Keep 'uploads/...' prefix inside the zip
+                    arcname = full.relative_to(UPLOAD_DIR.parent)
+                    zf.write(full, arcname)
+    mem.seek(0)
+    return mem.read()
+
+def extract_uploads_zip(zip_bytes: bytes):
+    """Extract a ZIP archive into uploads/ (only 'uploads/' paths allowed)."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for member in zf.infolist():
+            if not member.filename.startswith("uploads/"):
+                continue
+            zf.extract(member, path=UPLOAD_DIR.parent)
+
 # -----------------------------
-# Sidebar
+# Sidebar + UI
 # -----------------------------
 def header(db):
     st.markdown(f"### {APP_TITLE}")
@@ -180,22 +206,48 @@ def sidebar_mode():
 
 def sidebar_backup_restore(db):
     with st.sidebar.expander("Backup / Restore", expanded=False):
+        # --- Database JSON backup ---
         st.download_button(
-            "Download backup",
+            "Download DB backup (JSON)",
             data=json.dumps(db, indent=2, ensure_ascii=False),
             file_name="phy132_backup.json",
             mime="application/json",
             use_container_width=True,
         )
-        up = st.file_uploader("Import backup JSON", type=["json"], key="restore")
+        up = st.file_uploader("Import DB backup JSON", type=["json"], key="restore_json")
         if up is not None:
             try:
                 newdb = json.loads(up.getvalue().decode("utf-8"))
                 if "modules" in newdb and "course" in newdb:
                     save_db(newdb)
-                    st.success("Backup imported. Reload app.")
+                    st.success("Database imported. Reload the app.")
                 else:
                     st.error("Invalid structure.")
+            except Exception as e:
+                st.error(f"Import failed: {e}")
+
+        st.write("---")
+
+        # --- Uploads ZIP backup ---
+        st.markdown("**Uploads (all files)**")
+        if st.button("Create uploads.zip", use_container_width=True):
+            try:
+                zip_data = make_uploads_zip()
+                st.download_button(
+                    "Download uploads.zip",
+                    data=zip_data,
+                    file_name="uploads.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"ZIP creation failed: {e}")
+
+        zup = st.file_uploader("Import uploads.zip", type=["zip"], key="restore_uploads")
+        if zup is not None:
+            try:
+                extract_uploads_zip(zup.getvalue())
+                st.success("Uploads imported.")
             except Exception as e:
                 st.error(f"Import failed: {e}")
 
