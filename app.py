@@ -368,7 +368,10 @@ def main():
     db=load_db()
     header(db)
     mode,can_edit=sidebar_mode()
-    sidebar_backup_restore(db)
+
+    # SHOW BACKUP/RESTORE ONLY IN INSTRUCTOR MODE *WITH* CORRECT PASSCODE
+    if mode.startswith("Instructor") and can_edit:
+        sidebar_backup_restore(db)
 
     st.markdown("---")
     left,right=st.columns([2,1],vertical_alignment="top")
